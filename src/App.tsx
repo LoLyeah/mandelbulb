@@ -383,11 +383,24 @@ export default function App() {
           vec3 p = ro + rd * t;
           float d = map(p, orbit);
           
-          // Volumetric Fog Accumulation (Domain Warped)
-          if (u_fog > 0.5 && t < 5.0) {
-              float warp = noise(p * 0.5 + u_time * 0.2 * u_wind);
-              float n = fbm(p * 1.5 + warp + u_time * 0.4 * u_wind);
-              fogDensity += n * exp(-d * 6.0) * 0.025 * u_fog_density;
+          // Enhanced Volumetric Fog & Light Shafts (God Rays)
+          if (u_fog > 0.5 && t < 10.0) { // Extended reach for light shafts
+              vec3 lightPos = vec3(2.0, 4.0, -3.0);
+              vec3 lDir = normalize(lightPos - p);
+
+              // Henyey-Greenstein Phase Function for highly directional forward scattering
+              float g = 0.8; // High asymmetry for bright god rays towards the light
+              float cosTheta = dot(rd, lDir);
+              float phase = (1.0 - g * g) / (4.0 * 3.14159 * pow(1.0 + g * g - 2.0 * g * cosTheta, 1.5));
+              
+              // Light shaft alignment (noise streaked towards light source direction)
+              float warp = noise(p * 0.8 + lDir * u_time * 0.6 * u_wind);
+              float n = fbm(p * 1.5 - lDir * warp + u_time * 0.3 * u_wind);
+              
+              // Geometry influence: denser where D is small (gather in cavities) and scale with fractal trap
+              float geoInfluence = exp(-d * 4.0) * clamp(orbit * 2.5, 0.2, 1.5);
+              
+              fogDensity += n * phase * geoInfluence * 0.05 * u_fog_density;
           }
 
           glow += 0.01 / (0.01 + d * d);
@@ -407,7 +420,7 @@ export default function App() {
         
         // Volumetric Fog Color
         if (u_fog > 0.5) {
-            color += haloColor * fogDensity * 0.4;
+            color += haloColor * fogDensity * 0.8;
         }
 
         if (hit) {
@@ -440,28 +453,29 @@ export default function App() {
           color += vec3(0.1, 0.3, 0.4) * (1.0 - ao) * 0.2 * u_lighting;
         }
 
-        // --- POST PROCESSING: FLOWING MIST ---
+        // --- POST PROCESSING: FLOWING 3D MIST ---
         if (u_fog > 0.5) {
             float mist = 0.0;
-            // Layer 1: Faster, larger clouds
-            vec3 mpos1 = vec3(uv * 1.5, u_time * 0.1 * u_wind);
-            mpos1.x -= u_time * 0.8 * u_wind;
+            // Layer 1: Faster, mapped to true ray direction (3D reactive)
+            vec3 mpos1 = rd * 2.0 + vec3(u_time * 0.15 * u_wind, u_time * 0.1, 0.0);
             float m1 = fbm(mpos1);
             mist += smoothstep(0.3, 0.8, m1) * 0.15;
             
-            // Layer 2: Slower, smaller details
-            vec3 mpos2 = vec3(uv * 3.0, u_time * 0.05 * u_wind);
-            mpos2.x -= u_time * 0.4 * u_wind;
+            // Layer 2: Slower, smaller details flowing perpendicular
+            vec3 mpos2 = rd * 3.5 - vec3(0.0, u_time * 0.08 * u_wind, u_time * 0.05);
             float m2 = fbm(mpos2);
             mist += smoothstep(0.4, 0.9, m2) * 0.1;
             
+            // Depth attenuation so mist doesn't paint perfectly over very near foreground
+            float depthFade = smoothstep(0.0, 1.5, t);
+            
             // Apply mist color and additive glow
-            vec3 mistColor = haloColor * mist * u_fog_density;
+            vec3 mistColor = haloColor * mist * u_fog_density * depthFade;
             color += mistColor;
             
             // Additive glow where mist overlaps the fractal (hit is true)
             if (hit) {
-                color += mistColor * 0.5;
+                color += mistColor * 0.6;
             }
 
             float fogAmount = clamp((t - 1.0) / (MAX_DIST - 1.0), 0.0, 1.0) * u_fog_density;
@@ -537,6 +551,9 @@ export default function App() {
     let lastMouseX = 0, lastMouseY = 0;
 
     const handleMouseDown = (e: MouseEvent) => {
+      // Only initiate camera drag if clicking directly on the canvas element
+      if (e.target !== canvasRef.current) return;
+      
       isDragging = true;
       lastMouseX = e.clientX;
       lastMouseY = e.clientY;
@@ -573,9 +590,78 @@ export default function App() {
       isDragging = false;
     };
 
+    const handleWheel = (e: WheelEvent) => {
+      if (e.target !== canvasRef.current) return;
+      e.preventDefault();
+      const currentZoom = (window as any)._shaderZoom || 1.2;
+      const zoomFactor = e.deltaY > 0 ? 1.05 : 0.95;
+      const newZoom = Math.max(0.1, Math.min(currentZoom * zoomFactor, 10.0));
+      (window as any)._shaderZoom = newZoom;
+      setZoom(newZoom);
+    };
+
+    let initialPinchDist = 0;
+    let initialZoom = 1.0;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.target !== canvasRef.current) return;
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        initialPinchDist = Math.hypot(dx, dy);
+        initialZoom = (window as any)._shaderZoom || 1.2;
+      } else if (e.touches.length === 1) {
+        isDragging = true;
+        lastMouseX = e.touches[0].clientX;
+        lastMouseY = e.touches[0].clientY;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.target !== canvasRef.current) return;
+      e.preventDefault();
+      
+      if (e.touches.length === 2 && initialPinchDist > 0) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.hypot(dx, dy);
+        const scale = initialPinchDist / dist; // Inverted: spreading fingers (larger dist) means lower zoom value (closer to fractal)
+        
+        const newZoom = Math.max(0.1, Math.min(initialZoom * scale, 10.0));
+        (window as any)._shaderZoom = newZoom;
+        setZoom(newZoom);
+      } else if (e.touches.length === 1 && isDragging) {
+        const dx = e.touches[0].clientX - lastMouseX;
+        const dy = e.touches[0].clientY - lastMouseY;
+        
+        const newYaw = ((window as any)._shaderYaw || 0) - dx * 0.01;
+        const newPitch = ((window as any)._shaderPitch || 0) + dy * 0.01;
+        const clampedPitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, newPitch));
+        
+        (window as any)._shaderYaw = newYaw;
+        (window as any)._shaderPitch = clampedPitch;
+        setYaw(newYaw);
+        setPitch(clampedPitch);
+        
+        lastMouseX = e.touches[0].clientX;
+        lastMouseY = e.touches[0].clientY;
+      }
+    };
+
+    const handleTouchEnd = () => {
+      isDragging = false;
+      initialPinchDist = 0;
+    };
+
     window.addEventListener('mousedown', handleMouseDown);
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('wheel', handleWheel, { passive: false });
+    window.addEventListener('touchstart', handleTouchStart, { passive: false });
+    window.addEventListener('touchmove', handleTouchMove, { passive: false });
+    window.addEventListener('touchend', handleTouchEnd);
+    window.addEventListener('touchcancel', handleTouchEnd);
 
     const resize = () => {
       // Dynamic resize moved to render loop for resolution scale
@@ -735,6 +821,11 @@ export default function App() {
       window.removeEventListener('mousedown', handleMouseDown);
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('wheel', handleWheel);
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
+      window.removeEventListener('touchcancel', handleTouchEnd);
       window.removeEventListener('resize', resize);
       cancelAnimationFrame(animationFrameId);
     };
@@ -1036,7 +1127,7 @@ export default function App() {
                     animate={{ opacity: 1, filter: 'blur(0px)', scale: 1 }}
                     exit={{ opacity: 0, filter: 'blur(4px)', scale: 0.95, transition: { duration: 0.15 } }}
                     transition={{ duration: 0.3, delay: 0.05 }}
-                    className="w-full flex-col flex h-full"
+                    className="w-full flex-col flex flex-1 min-h-0 overflow-hidden"
                   >
                     {/* Header / Toggle */}
                     <div className="border-b border-white/10 shrink-0">
@@ -1082,7 +1173,7 @@ export default function App() {
                       </div>
                     </div>
                     
-                    <div className="px-6 pb-6 space-y-6 flex-1 overflow-y-auto no-scrollbar">
+                    <div className="px-6 pb-6 space-y-6 flex-1 overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:bg-white/20 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full">
                       <AnimatePresence mode="wait">
                         <motion.div
                           key={activeTab}
@@ -1291,8 +1382,13 @@ export default function App() {
                       <span className="text-white/40">Resolution Scale</span>
                       <span className="text-white/80">{(resScale * 100).toFixed(0)}%</span>
                     </div>
+                    {resScale > 1.5 && (
+                      <div className="text-[8px] font-mono text-amber-400 bg-amber-400/10 border border-amber-400/20 px-2 py-1 rounded">
+                        WARNING: Values above 150% severely impact framerate on most devices.
+                      </div>
+                    )}
                     <input 
-                      type="range" min="0.25" max="1.5" step="0.05" value={resScale}
+                      type="range" min="0.25" max="3" step="0.05" value={resScale}
                       onChange={(e) => { setResScale(parseFloat(e.target.value)); setGraphicsPreset('custom'); }}
                       className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-white/60"
                     />
