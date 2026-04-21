@@ -32,6 +32,8 @@ export default function App() {
   const [enableShadows, setEnableShadows] = useState(true);
   const [enableAO, setEnableAO] = useState(true);
   const [enableFog, setEnableFog] = useState(true);
+  const [fogDensity, setFogDensity] = useState(1.0);
+  const [customColor, setCustomColor] = useState('#00ccff');
 
   const applyGraphicsPreset = (preset: 'low' | 'medium' | 'high') => {
     setGraphicsPreset(preset);
@@ -45,11 +47,13 @@ export default function App() {
       setEnableShadows(true);
       setEnableAO(false);
       setEnableFog(true);
+      setFogDensity(0.6);
     } else if (preset === 'high') {
       setResScale(1.0);
       setEnableShadows(true);
       setEnableAO(true);
       setEnableFog(true);
+      setFogDensity(1.0);
     }
   };
 
@@ -57,7 +61,14 @@ export default function App() {
     cyan: [0.0, 0.8, 1.0],
     orange: [1.0, 0.4, 0.0],
     purple: [0.7, 0.2, 1.0],
-    lime: [0.6, 1.0, 0.0]
+    lime: [0.6, 1.0, 0.0],
+    custom: (() => {
+      const hex = customColor.replace('#', '');
+      const r = parseInt(hex.substring(0, 2), 16) / 255;
+      const g = parseInt(hex.substring(2, 4), 16) / 255;
+      const b = parseInt(hex.substring(4, 6), 16) / 255;
+      return [r, g, b];
+    })()
   };
   const [audioStarted, setAudioStarted] = useState(false);
   const noiseGainRef = useRef<GainNode | null>(null);
@@ -207,6 +218,12 @@ export default function App() {
       uniform float u_zoom;
       uniform float u_depth;
       uniform float u_wind;
+      uniform vec2 u_jitter;
+      uniform float u_hdr_mapping;
+      uniform float u_shadows;
+      uniform float u_ao;
+      uniform float u_fog;
+      uniform float u_fog_density;
 
       #define MAX_STEPS 192
       #define SURF_DIST 0.0002
@@ -319,8 +336,9 @@ export default function App() {
       }
 
       void main() {
-        vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution.xy) / u_resolution.y;
-        vec2 screenUV = gl_FragCoord.xy / u_resolution.xy;
+        vec2 fragCoord = gl_FragCoord.xy + u_jitter;
+        vec2 uv = (fragCoord - 0.5 * u_resolution.xy) / u_resolution.y;
+        vec2 screenUV = fragCoord / u_resolution.xy;
         
         // Offset UV to move the object to the bottom right
         uv += vec2(-0.25, 0.25);
@@ -366,10 +384,10 @@ export default function App() {
           float d = map(p, orbit);
           
           // Volumetric Fog Accumulation (Domain Warped)
-          if (t < 5.0) {
+          if (u_fog > 0.5 && t < 5.0) {
               float warp = noise(p * 0.5 + u_time * 0.2 * u_wind);
               float n = fbm(p * 1.5 + warp + u_time * 0.4 * u_wind);
-              fogDensity += n * exp(-d * 6.0) * 0.025;
+              fogDensity += n * exp(-d * 6.0) * 0.025 * u_fog_density;
           }
 
           glow += 0.01 / (0.01 + d * d);
@@ -388,7 +406,9 @@ export default function App() {
         color += haloColor * glow * 0.015;
         
         // Volumetric Fog Color
-        color += haloColor * fogDensity * 0.4;
+        if (u_fog > 0.5) {
+            color += haloColor * fogDensity * 0.4;
+        }
 
         if (hit) {
           vec3 p = ro + rd * t;
@@ -396,8 +416,8 @@ export default function App() {
           vec3 lightPos = vec3(2.0, 4.0, -3.0);
           vec3 lightDir = normalize(lightPos - p);
           
-          float ao = calcAO(p, n);
-          float shadow = softShadow(p, lightDir, 0.02, 2.5);
+          float ao = u_ao > 0.5 ? calcAO(p, n) : 1.0;
+          float shadow = u_shadows > 0.5 ? softShadow(p, lightDir, 0.02, 2.5) : 1.0;
           
           vec3 boneColor = vec3(0.9, 0.85, 0.8);
           vec3 rootColor = vec3(0.1, 0.1, 0.12);
@@ -421,31 +441,38 @@ export default function App() {
         }
 
         // --- POST PROCESSING: FLOWING MIST ---
-        float mist = 0.0;
-        // Layer 1: Faster, larger clouds
-        vec3 mpos1 = vec3(uv * 1.5, u_time * 0.1 * u_wind);
-        mpos1.x -= u_time * 0.8 * u_wind;
-        float m1 = fbm(mpos1);
-        mist += smoothstep(0.3, 0.8, m1) * 0.15;
-        
-        // Layer 2: Slower, smaller details
-        vec3 mpos2 = vec3(uv * 3.0, u_time * 0.05 * u_wind);
-        mpos2.x -= u_time * 0.4 * u_wind;
-        float m2 = fbm(mpos2);
-        mist += smoothstep(0.4, 0.9, m2) * 0.1;
-        
-        // Apply mist color and additive glow
-        vec3 mistColor = haloColor * mist;
-        color += mistColor;
-        
-        // Additive glow where mist overlaps the fractal (hit is true)
-        if (hit) {
-            color += mistColor * 0.5;
+        if (u_fog > 0.5) {
+            float mist = 0.0;
+            // Layer 1: Faster, larger clouds
+            vec3 mpos1 = vec3(uv * 1.5, u_time * 0.1 * u_wind);
+            mpos1.x -= u_time * 0.8 * u_wind;
+            float m1 = fbm(mpos1);
+            mist += smoothstep(0.3, 0.8, m1) * 0.15;
+            
+            // Layer 2: Slower, smaller details
+            vec3 mpos2 = vec3(uv * 3.0, u_time * 0.05 * u_wind);
+            mpos2.x -= u_time * 0.4 * u_wind;
+            float m2 = fbm(mpos2);
+            mist += smoothstep(0.4, 0.9, m2) * 0.1;
+            
+            // Apply mist color and additive glow
+            vec3 mistColor = haloColor * mist * u_fog_density;
+            color += mistColor;
+            
+            // Additive glow where mist overlaps the fractal (hit is true)
+            if (hit) {
+                color += mistColor * 0.5;
+            }
+
+            float fogAmount = clamp((t - 1.0) / (MAX_DIST - 1.0), 0.0, 1.0) * u_fog_density;
+            vec3 finalFogColor = vec3(0.01, 0.02, 0.03);
+            color = mix(color, finalFogColor, fogAmount);
         }
 
-        float fogAmount = clamp((t - 1.0) / (MAX_DIST - 1.0), 0.0, 1.0);
-        vec3 finalFogColor = vec3(0.01, 0.02, 0.03);
-        color = mix(color, finalFogColor, fogAmount);
+        if (u_hdr_mapping > 0.5) {
+            vec3 x = color * 1.2;
+            color = clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+        }
 
         color = pow(color, vec3(0.4545));
         gl_FragColor = vec4(color, 1.0);
@@ -467,39 +494,7 @@ export default function App() {
     }
 
     const vertexShader = createShader(gl, gl.VERTEX_SHADER, vsSource);
-    
-    // Inject jitter and HDR logic into Fragment Shader
-    const modifiedFsSource = fsSource.replace(
-      'uniform float u_wind;',
-      'uniform float u_wind;\n      uniform vec2 u_jitter;\n      uniform float u_hdr_mapping;\n      uniform float u_shadows;\n      uniform float u_ao;\n      uniform float u_fog;'
-    ).replace(
-      'void main() {',
-      'void main() {\n        vec2 fragCoord = gl_FragCoord.xy + u_jitter;'
-    ).replace(
-      'if (t < 5.0) {',
-      'if (u_fog > 0.5 && t < 5.0) {'
-    ).replace(
-      'float ao = calcAO(p, n);',
-      'float ao = u_ao > 0.5 ? calcAO(p, n) : 1.0;'
-    ).replace(
-      'float shadow = softShadow(p, lightDir, 0.02, 2.5);',
-      'float shadow = u_shadows > 0.5 ? softShadow(p, lightDir, 0.02, 2.5) : 1.0;'
-    ).replace(
-      'vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution.xy) / u_resolution.y;',
-      'vec2 uv = (fragCoord - 0.5 * u_resolution.xy) / u_resolution.y;'
-    ).replace(
-      'vec2 screenUV = gl_FragCoord.xy / u_resolution.xy;',
-      'vec2 screenUV = fragCoord / u_resolution.xy;'
-    ).replace(
-      'color = pow(color, vec3(0.4545));',
-      `if (u_hdr_mapping > 0.5) {
-          vec3 x = color * 1.2;
-          color = clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
-        }
-        color = pow(color, vec3(0.4545));`
-    );
-
-    const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, modifiedFsSource);
+    const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
     if (!vertexShader || !fragmentShader) return;
 
     const program = gl.createProgram();
@@ -536,6 +531,7 @@ export default function App() {
     const shadowsLoc = gl.getUniformLocation(program, 'u_shadows');
     const aoLoc = gl.getUniformLocation(program, 'u_ao');
     const fogLoc = gl.getUniformLocation(program, 'u_fog');
+    const fogDensityLoc = gl.getUniformLocation(program, 'u_fog_density');
 
     let isDragging = false;
     let lastMouseX = 0, lastMouseY = 0;
@@ -650,6 +646,7 @@ export default function App() {
         gl.uniform1f(shadowsLoc, 1.0);
         gl.uniform1f(aoLoc, 1.0);
         gl.uniform1f(fogLoc, 1.0);
+        gl.uniform1f(fogDensityLoc, 1.0);
         
         const c = (window as any)._shaderColor || [0.0, 0.8, 1.0];
         gl.uniform3f(colorLoc, c[0], c[1], c[2]);
@@ -700,6 +697,7 @@ export default function App() {
       gl.uniform1f(shadowsLoc, (window as any)._shaderShadows ?? 1.0);
       gl.uniform1f(aoLoc, (window as any)._shaderAO ?? 1.0);
       gl.uniform1f(fogLoc, (window as any)._shaderFog ?? 1.0);
+      gl.uniform1f(fogDensityLoc, (window as any)._shaderFogDensity ?? 1.0);
       
       // Update rotation if not paused
       if (!(window as any)._shaderPaused) {
@@ -893,7 +891,12 @@ export default function App() {
     (window as any)._shaderDepth = proximity;
     (window as any)._shaderWind = wind;
     (window as any)._shaderColor = (colors as any)[colorMode];
-  }, [speed, lighting, zoom, yaw, pitch, isPaused, proximity, wind, colorMode]);
+    (window as any)._shaderResScale = resScale;
+    (window as any)._shaderShadows = enableShadows ? 1.0 : 0.0;
+    (window as any)._shaderAO = enableAO ? 1.0 : 0.0;
+    (window as any)._shaderFog = enableFog ? 1.0 : 0.0;
+    (window as any)._shaderFogDensity = fogDensity;
+  }, [speed, lighting, zoom, yaw, pitch, isPaused, proximity, wind, colorMode, customColor, resScale, enableShadows, enableAO, enableFog, fogDensity]);
 
   return (
     <div className="fixed inset-0 bg-black overflow-hidden">
@@ -1161,22 +1164,38 @@ export default function App() {
                 {/* Color Mode Control */}
                 <div className="space-y-2">
                   <span className="text-[9px] font-mono uppercase tracking-tighter text-white/40">Atmospheric Hue</span>
-                  <div className="grid grid-cols-4 gap-2">
-                    {Object.keys(colors).map((mode) => (
-                      <button
-                        key={mode}
-                        onClick={() => setColorMode(mode)}
-                        className={`h-6 rounded-md border transition-all ${
-                          colorMode === mode 
-                            ? 'border-white/40 ring-1 ring-white/20' 
-                            : 'border-white/5 hover:border-white/20'
-                        }`}
-                        style={{ 
-                          backgroundColor: `rgb(${(colors as any)[mode][0]*255}, ${(colors as any)[mode][1]*255}, ${(colors as any)[mode][2]*255}, 0.3)` 
-                        }}
-                        title={mode}
-                      />
-                    ))}
+                  <div className="flex gap-2 items-center">
+                    <div className="grid grid-cols-4 gap-2 flex-1">
+                      {Object.keys(colors).filter(k => k !== 'custom').map((mode) => (
+                        <button
+                          key={mode}
+                          onClick={() => setColorMode(mode)}
+                          className={`h-6 rounded-md border transition-all ${
+                            colorMode === mode 
+                              ? 'border-white/40 ring-1 ring-white/20' 
+                              : 'border-white/5 hover:border-white/20'
+                          }`}
+                          style={{ 
+                            backgroundColor: `rgb(${(colors as any)[mode][0]*255}, ${(colors as any)[mode][1]*255}, ${(colors as any)[mode][2]*255}, 0.3)` 
+                          }}
+                          title={mode}
+                        />
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2 border-l border-white/10 pl-2">
+                      <div className={`h-6 w-6 rounded-md border overflow-hidden cursor-pointer relative shrink-0 transition-all ${colorMode === 'custom' ? 'border-white/40 ring-1 ring-white/20' : 'border-white/5 hover:border-white/20'}`}>
+                        <input
+                          type="color"
+                          value={customColor}
+                          onChange={(e) => {
+                            setCustomColor(e.target.value);
+                            setColorMode('custom');
+                          }}
+                          className="absolute -inset-2 w-[200%] h-[200%] cursor-pointer p-0 m-0 border-none outline-none focus:outline-none"
+                          title="Custom Color"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1204,6 +1223,89 @@ export default function App() {
                     </h3>
                   </button>
                 ))}
+              </div>
+            )}
+
+            {activeTab === 'graphics' && (
+              <div className="space-y-6 pt-4 pb-4">
+                <div className="space-y-3">
+                  <span className="text-[9px] font-mono uppercase tracking-tighter text-white/40">Quality Presets</span>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { id: 'low', label: 'Performance' },
+                      { id: 'medium', label: 'Balanced' },
+                      { id: 'high', label: 'Fidelity' }
+                    ].map(preset => (
+                      <button
+                        key={preset.id}
+                        onClick={() => applyGraphicsPreset(preset.id as any)}
+                        className={`py-1.5 rounded text-[9px] font-mono uppercase tracking-widest transition-all border ${
+                          graphicsPreset === preset.id
+                            ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/40'
+                            : 'bg-white/5 text-white/40 border-white/5 hover:border-white/20 hover:text-white/80'
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-4 pt-4 border-t border-white/5">
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-[9px] font-mono uppercase tracking-tighter">
+                      <span className="text-white/40">Resolution Scale</span>
+                      <span className="text-white/80">{(resScale * 100).toFixed(0)}%</span>
+                    </div>
+                    <input 
+                      type="range" min="0.25" max="1.5" step="0.05" value={resScale}
+                      onChange={(e) => { setResScale(parseFloat(e.target.value)); setGraphicsPreset('custom'); }}
+                      className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-white/60"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-[9px] font-mono uppercase tracking-tighter text-white/40">Dynamic Shadows</span>
+                    <button 
+                      onClick={() => { setEnableShadows(!enableShadows); setGraphicsPreset('custom'); }}
+                      className={`px-3 py-1 rounded-full font-mono text-[9px] uppercase tracking-widest transition-all ${!enableShadows ? 'bg-white/5 text-white/40 border border-white/10' : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40'}`}
+                    >
+                      {enableShadows ? 'On' : 'Off'}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-[9px] font-mono uppercase tracking-tighter text-white/40">Ambient Occlusion</span>
+                    <button 
+                      onClick={() => { setEnableAO(!enableAO); setGraphicsPreset('custom'); }}
+                      className={`px-3 py-1 rounded-full font-mono text-[9px] uppercase tracking-widest transition-all ${!enableAO ? 'bg-white/5 text-white/40 border border-white/10' : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40'}`}
+                    >
+                      {enableAO ? 'On' : 'Off'}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-[9px] font-mono uppercase tracking-tighter text-white/40">Volumetric Fog</span>
+                    <button 
+                      onClick={() => { setEnableFog(!enableFog); setGraphicsPreset('custom'); }}
+                      className={`px-3 py-1 rounded-full font-mono text-[9px] uppercase tracking-widest transition-all ${!enableFog ? 'bg-white/5 text-white/40 border border-white/10' : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40'}`}
+                    >
+                      {enableFog ? 'On' : 'Off'}
+                    </button>
+                  </div>
+
+                  <div className={`space-y-2 transition-opacity ${!enableFog ? 'opacity-30 pointer-events-none' : ''}`}>
+                    <div className="flex justify-between text-[9px] font-mono uppercase tracking-tighter">
+                      <span className="text-white/40">Fog Density</span>
+                      <span className="text-white/80">{fogDensity.toFixed(2)}</span>
+                    </div>
+                    <input 
+                      type="range" min="0" max="1" step="0.01" value={fogDensity}
+                      onChange={(e) => { setFogDensity(parseFloat(e.target.value)); setGraphicsPreset('custom'); }}
+                      className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-white/60"
+                    />
+                  </div>
+                </div>
               </div>
             )}
 
