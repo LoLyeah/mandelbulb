@@ -741,6 +741,22 @@ export default function App() {
   }, []);
 
   const applyLandscape = (landscape: any) => {
+    // Flash transition effect
+    const overlay = document.createElement('div');
+    overlay.style.position = 'fixed';
+    overlay.style.inset = '0';
+    overlay.style.backgroundColor = 'white';
+    overlay.style.zIndex = '9999';
+    overlay.style.opacity = '0';
+    overlay.style.pointerEvents = 'none';
+    overlay.style.transition = 'opacity 0.2s ease-in-out';
+    document.body.appendChild(overlay);
+
+    // Trigger fade in
+    requestAnimationFrame(() => {
+      overlay.style.opacity = '0.3';
+    });
+
     const settings = landscape.settings;
     if (settings.speed !== undefined) setSpeed(settings.speed);
     if (settings.lighting !== undefined) setLighting(settings.lighting);
@@ -765,6 +781,14 @@ export default function App() {
 
     // Trigger audio movement
     movementRef.current = 1.0;
+
+    // Remove overlay
+    setTimeout(() => {
+      overlay.style.opacity = '0';
+      setTimeout(() => {
+        document.body.removeChild(overlay);
+      }, 200);
+    }, 200);
   };
 
   const landscapes = [
@@ -942,15 +966,15 @@ export default function App() {
                 <div className="grid grid-cols-3 gap-4">
                   {landscapes.slice(0, 3).map((l) => (
                     <div key={l.id} className="space-y-2 group">
-                      <div className="aspect-[4/3] rounded-xl overflow-hidden border border-white/10 bg-white/5">
+                      <div className="aspect-[4/3] rounded-xl overflow-hidden border border-white/10 bg-white/5 transition-all duration-300 group-hover:border-white/30 group-hover:shadow-[0_0_20px_rgba(255,255,255,0.1)]">
                         <img 
                           src={l.image} 
                           alt={l.name} 
-                          className="w-full h-full object-cover grayscale opacity-50 group-hover:grayscale-0 group-hover:opacity-100 transition-all duration-700"
+                          className="w-full h-full object-cover grayscale opacity-50 transition-all duration-700 ease-out group-hover:grayscale-0 group-hover:opacity-100 group-hover:scale-110"
                           referrerPolicy="no-referrer"
                         />
                       </div>
-                      <p className="text-[8px] uppercase tracking-widest text-white/20 text-center group-hover:text-white/60 transition-colors">
+                      <p className="text-[8px] uppercase tracking-widest text-white/20 text-center transition-all duration-300 group-hover:text-white/60 group-hover:-translate-y-0.5">
                         {l.name}
                       </p>
                     </div>
@@ -972,47 +996,57 @@ export default function App() {
       </AnimatePresence>
 
       {/* UI Panel */}
-      <div className={`fixed z-50 ${isCollapsed ? 'top-6 right-6' : 'inset-0 md:top-6 md:right-6 md:inset-auto'}`}>
+      <div className="fixed z-50 top-4 right-4 md:top-6 md:right-6 pointer-events-none flex flex-col items-end justify-start">
         <AnimatePresence>
           {audioStarted && (
             <motion.div
-              initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.5, duration: 0.8 }}
-              className="w-full h-full flex flex-col items-end justify-start"
+              layout
+              initial={{ opacity: 0, scale: 0.9, borderRadius: 24 }}
+              animate={{ 
+                opacity: 1, 
+                scale: 1,
+                borderRadius: isCollapsed ? 24 : 16
+              }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className={`pointer-events-auto bg-black/40 backdrop-blur-xl border border-white/10 shadow-2xl overflow-hidden flex flex-col transition-colors ${
+                isCollapsed 
+                  ? 'w-10 h-10 md:w-12 md:h-12 cursor-pointer hover:bg-white/10 hover:border-white/20 group' 
+                  : 'w-[calc(100vw-32px)] md:w-[320px] max-h-[calc(100vh-32px)] md:max-h-[85vh]'
+              }`}
+              onClick={() => {
+                if (isCollapsed) setIsCollapsed(false);
+              }}
             >
-              {isCollapsed ? (
-                <motion.button 
-                  key="collapsed"
-                  layoutId="system-panel"
-                  initial={{ opacity: 0, scale: 0.5 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.5 }}
-                  onClick={() => setIsCollapsed(false)}
-                  className="w-10 h-10 bg-black/40 backdrop-blur-xl border border-white/10 rounded-full flex items-center justify-center hover:bg-white/10 transition-all shadow-2xl group"
-                >
-                  <div className="w-1.5 h-1.5 rounded-full bg-white/40 group-hover:bg-white/80 transition-colors" />
-                </motion.button>
-              ) : (
-                <motion.div 
-                  key="expanded"
-                  layoutId="system-panel"
-                  transition={{ 
-                    type: 'spring', 
-                    damping: 25, 
-                    stiffness: 200
-                  }}
-                  className="w-full h-full md:w-[280px] md:h-auto bg-black/40 backdrop-blur-xl md:border md:border-white/10 md:rounded-2xl overflow-hidden shadow-2xl flex flex-col"
-                >
+              <AnimatePresence mode="wait" initial={false}>
+                {isCollapsed ? (
+                  <motion.div
+                    key="collapsed"
+                    initial={{ opacity: 0, scale: 0.5 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.5, transition: { duration: 0.1 } }}
+                    transition={{ duration: 0.2 }}
+                    className="w-full h-full flex items-center justify-center relative"
+                  >
+                    <div className="w-1.5 h-1.5 rounded-full bg-white/40 group-hover:bg-white/80 transition-colors shadow-[0_0_10px_rgba(255,255,255,0.2)]" />
+                  </motion.div>
+                ) : (
+                  <motion.div 
+                    key="expanded"
+                    initial={{ opacity: 0, filter: 'blur(8px)', scale: 0.95 }}
+                    animate={{ opacity: 1, filter: 'blur(0px)', scale: 1 }}
+                    exit={{ opacity: 0, filter: 'blur(4px)', scale: 0.95, transition: { duration: 0.15 } }}
+                    transition={{ duration: 0.3, delay: 0.05 }}
+                    className="w-full flex-col flex h-full"
+                  >
                     {/* Header / Toggle */}
                     <div className="border-b border-white/10 shrink-0">
                       <div className="w-full flex items-center justify-between p-4 group">
                         <div className="flex items-center gap-3 cursor-pointer" onClick={() => setIsCollapsed(true)}>
-                          <div className="w-1.5 h-1.5 rounded-full bg-white/40 group-hover:bg-white/80 transition-colors" />
+                          <div className="w-1.5 h-1.5 rounded-full bg-white/40 group-hover:bg-white/80 transition-colors shadow-[0_0_10px_rgba(255,255,255,0.2)]" />
                           <h2 className="text-white/80 font-mono text-[10px] uppercase tracking-widest hover:text-white transition-colors">System Interface</h2>
                         </div>
                         <button 
-                          onClick={() => setIsCollapsed(true)}
+                          onClick={(e) => { e.stopPropagation(); setIsCollapsed(true); }}
                           className="text-white/40 hover:text-white font-mono text-[10px] transition-colors pr-1 tracking-widest"
                           title="Collapse"
                         >
@@ -1048,7 +1082,7 @@ export default function App() {
                       </div>
                     </div>
                     
-                    <div className="px-6 pb-6 space-y-6 flex-1 md:max-h-[600px] overflow-y-auto">
+                    <div className="px-6 pb-6 space-y-6 flex-1 overflow-y-auto no-scrollbar">
                       <AnimatePresence mode="wait">
                         <motion.div
                           key={activeTab}
@@ -1209,18 +1243,18 @@ export default function App() {
                     onClick={() => applyLandscape(landscape)}
                     className="w-full text-left group"
                   >
-                    <div className="relative aspect-[16/9] w-full rounded-xl overflow-hidden border border-white/10 bg-white/5 transition-all group-hover:border-white/30 group-hover:scale-[1.02]">
+                    <div className="relative aspect-[16/9] w-full rounded-xl overflow-hidden border border-white/10 bg-white/5 transition-all duration-300 group-hover:border-white/30 group-hover:shadow-[0_0_20px_rgba(255,255,255,0.1)]">
                       <img 
                         src={landscape.image} 
                         alt={landscape.name}
-                        className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-500"
+                        className="w-full h-full object-cover grayscale transition-all duration-700 ease-out group-hover:grayscale-0 group-hover:scale-110"
                         referrerPolicy="no-referrer"
                       />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-60 group-hover:opacity-100 transition-opacity duration-300" />
+                      <h3 className="absolute bottom-3 left-0 right-0 text-white/60 font-mono text-[10px] uppercase tracking-widest group-hover:text-white transition-colors text-center font-bold filter drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] z-10 transition-transform duration-300 group-hover:-translate-y-1">
+                        {landscape.name}
+                      </h3>
                     </div>
-                    <h3 className="text-white/60 font-mono text-[10px] uppercase tracking-widest mt-3 group-hover:text-white transition-colors text-center">
-                      {landscape.name}
-                    </h3>
                   </button>
                 ))}
               </div>
@@ -1427,8 +1461,9 @@ export default function App() {
           </div>
         </div>
       </div>
-                </motion.div>
-              )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </motion.div>
           )}
         </AnimatePresence>
